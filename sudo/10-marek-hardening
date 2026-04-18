@@ -1,0 +1,4 @@
+# homelab-bootstrap -- sudoers drop-in
+# Replaces cloud-init NOPASSWD grant
+# Validated by: visudo -cf /etc/sudoers.d/10-wheel-hardening
+%wheel  ALL=(ALL:ALL) ALL
