@@ -33,7 +33,7 @@ pkg_install() {
 # ============================================================
 # MODULE: motd
 # ============================================================
-{install_motd() {
+install_motd() {
   info "Installing custom MOTD..."
 
   if [ "$DISTRO_FAMILY" = "rhel" ]; then
