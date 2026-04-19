@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================
 #  homelab-bootstrap -- install.sh
-#  Modular setup for RHEL / Fedora / Debian-based servers
+#  Modular setup for RHEL / Fedora / Debian / Ubuntu
 #
 #  Usage: ./install.sh [--all] [--motd] [--zsh] [--ssh] [--sudo] [--thefuck]
 #  No args = interactive menu
@@ -12,17 +12,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 USER_HOME="${HOME}"
 CURRENT_USER="${USER}"
 
-R='\033[0;31m'; G='\033[0;32m'; Y='\033[0;33m'; C='\033[0;36m'; N='\033[0m'
-info() { echo -e "${C}[INFO]${N}  $*"; }
-ok()   { echo -e "${G}[OK]${N}    $*"; }
-warn() { echo -e "${Y}[WARN]${N}  $*"; }
-die()  { echo -e "${R}[ERROR]${N} $*"; exit 1; }
+R='\033[0;31m'; G='\033[0;32m'; Y='\033[0;33d'; C='\033[0;36m'; N='\033[0m'
+info() { echo -e "\033[0;36m[INFO]\033[0m  $*"; }
+ok()   { echo -e "\033[0;32m[OK]\033[0m    $*"; }
+warn() { echo -e "\033[0;33m[WARN]\033[0m  $*"; }
+die()  { echo -e "\033[0;31m[ERROR]\033[0m $*"; exit 1; }
 
 detect_pkg_manager() {
-  if   command -v dnf &>/dev/null; then PKG="dnf"
-  elif command -v apt &>/dev/null; then PKG="apt"
+  if   command -v dnf &>/dev/null; then PKG="dnf"; DISTRO_FAMILY="rhel"
+  elif command -v apt &>/dev/null; then PKG="apt"; DISTRO_FAMILY="debian"
   else die "Unsupported package manager (need dnf or apt)"; fi
-  info "Package manager: $PKG"
+  info "Package manager: $PKG / family: $DISTRO_FAMILY"
 }
 
 pkg_install() {
@@ -30,15 +30,52 @@ pkg_install() {
   [ "$PKG" = "dnf" ] && sudo dnf install -y "$@" || sudo apt-get install -y "$@"
 }
 
+# ============================================================
+# MODULE: motd
+# ============================================================
 install_motd() {
   info "Installing custom MOTD..."
-  sudo cp "$SCRIPT_DIR/motd/motd.sh" /etc/profile.d/motd.sh
-  sudo chmod +x /etc/profile.d/motd.sh
-  [ -f /etc/motd.d/insights-client ] && sudo truncate -s 0 /etc/motd.d/insights-client && warn "Silenced Red Hat Insights MOTD"
-  sudo truncate -s 0 /etc/motd 2>/dev/null || true
-  ok "MOTD installed -> /etc/profile.d/motd.sh"
+
+  if [ "$DISTRO_FAMILY" = "rhel" ]; then
+    # RHEL/Fedora: profile.d script, runs on interactive login
+    sudo cp "$SCRIPT_DIR/motd/motd.sh" /etc/profile.d/motd.sh
+    sudo chmod +x /etc/profile.d/motd.sh
+    # Silence Red Hat Insights prompt
+    [ -f /etc/motd.d/insights-client ] && sudo truncate -s 0 /etc/motd.d/insights-client \
+      && warn "Silenced Red Hat Insights MOTD"
+    sudo truncate -s 0 /etc/motd 2>/dev/null || true
+    ok "MOTD installed -> /etc/profile.d/motd.sh"
+
+  elif [ "$DISTRO_FAMILY" = "debian" ]; then
+    # Debian/Ubuntu: update-motd.d — run-parts via PAM on SSH login
+    sudo mkdir -p /etc/update-motd.d
+    sudo cp "$SCRIPT_DIR/motd/motd-debian.sh" /etc/update-motd.d/01-homelab
+    sudo chmod +x /etc/update-motd.d/01-homelab
+
+    # Disable noisy default Ubuntu MOTD scripts
+    for f in /etc/update-motd.d/10-help-text \
+              /etc/update-motd.d/50-motd-news \
+              /etc/update-motd.d/80-livepatch \
+              /etc/update-motd.d/90-updates-available \
+              /etc/update-motd.d/91-contract-ua-esm-status; do
+      [ -f "$f" ] && sudo chmod -x "$f" && warn "Disabled: $(basename $f)"
+    done
+
+    # Ensure pam_motd runs update-motd.d (check /etc/pam.d/sshd)
+    if ! grep -q "pam_motd" /etc/pam.d/sshd 2>/dev/null; then
+      warn "pam_motd not found in /etc/pam.d/sshd -- MOTD may not show over SSH"
+      warn "Add this to /etc/pam.d/sshd: session optional pam_motd.so"
+    fi
+
+    # Silence static /etc/motd
+    sudo truncate -s 0 /etc/motd 2>/dev/null || true
+    ok "MOTD installed -> /etc/update-motd.d/01-homelab"
+  fi
 }
 
+# ============================================================
+# MODULE: zsh
+# ============================================================
 install_zsh() {
   info "Installing zsh + Oh My Zsh..."
   pkg_install zsh git curl
@@ -81,6 +118,9 @@ install_zsh() {
   ok "zsh + Oh My Zsh fully configured"
 }
 
+# ============================================================
+# MODULE: thefuck
+# ============================================================
 install_thefuck() {
   info "Installing thefuck via pipx..."
   command -v pipx &>/dev/null || pkg_install pipx
@@ -90,18 +130,25 @@ install_thefuck() {
   fi
 
   if command -v python3.11 &>/dev/null; then
-    pipx install --python python3.11 thefuck
-    ok "thefuck installed (python3.11)"
+    pipx install --python python3.11 thefuck && ok "thefuck installed (python3.11)"
   elif pipx install --fetch-missing-python --python 3.11 thefuck 2>/dev/null; then
     ok "thefuck installed (pipx fetched python3.11)"
   else
     warn "python3.11 not found -- trying system Python (may fail on 3.12+)"
-    pipx install thefuck || die "Failed. Install python3.11: dnf install python3.11"
+    if [ "$DISTRO_FAMILY" = "rhel" ]; then
+      warn "Try: dnf install python3.11 && ./install.sh --thefuck"
+    else
+      warn "Try: apt install python3.11 && ./install.sh --thefuck"
+    fi
+    pipx install thefuck || die "thefuck install failed."
   fi
   pipx ensurepath
   ok "thefuck ready"
 }
 
+# ============================================================
+# MODULE: ssh
+# ============================================================
 install_ssh() {
   info "Deploying sshd hardening config..."
   SSHD_D="/etc/ssh/sshd_config.d"
@@ -110,22 +157,34 @@ install_ssh() {
     sudo chmod 600 "$SSHD_D/99-hardening.conf"
     ok "Deployed -> $SSHD_D/99-hardening.conf"
   else
-    warn "/etc/ssh/sshd_config.d not found -- appending to sshd_config"
+    warn "/etc/ssh/sshd_config.d not found -- appending to /etc/ssh/sshd_config"
     echo "" | sudo tee -a /etc/ssh/sshd_config
     sudo tee -a /etc/ssh/sshd_config < "$SCRIPT_DIR/ssh/sshd_hardening.conf"
   fi
-  sudo sshd -t && sudo systemctl restart sshd && ok "sshd hardened and restarted" || die "sshd config invalid!"
+  sudo sshd -t && sudo systemctl restart sshd \
+    && ok "sshd hardened and restarted" \
+    || die "sshd config validation failed! Fix before restarting."
 }
 
+# ============================================================
+# MODULE: sudo
+# ============================================================
 install_sudo() {
   info "Deploying sudoers drop-in..."
   TARGET="/etc/sudoers.d/10-wheel-hardening"
   sudo cp "$SCRIPT_DIR/sudo/10-marek-hardening" "$TARGET"
   sudo chmod 440 "$TARGET"
-  [ -f /etc/sudoers.d/90-cloud-init-users ] && sudo rm /etc/sudoers.d/90-cloud-init-users && warn "Removed cloud-init NOPASSWD"
-  sudo visudo -cf "$TARGET" && ok "sudoers drop-in deployed: $TARGET" || die "sudoers syntax error!"
+  [ -f /etc/sudoers.d/90-cloud-init-users ] \
+    && sudo rm /etc/sudoers.d/90-cloud-init-users \
+    && warn "Removed /etc/sudoers.d/90-cloud-init-users (cloud-init NOPASSWD)"
+  sudo visudo -cf "$TARGET" \
+    && ok "sudoers drop-in deployed: $TARGET" \
+    || die "sudoers syntax error! Check $TARGET"
 }
 
+# ============================================================
+# Helpers
+# ============================================================
 usage() {
   cat <<EOF
 
@@ -135,11 +194,11 @@ usage() {
   No options = interactive menu
 
   --all       Run all modules
-  --motd      Custom MOTD (/etc/profile.d/motd.sh)
+  --motd      Custom MOTD (distro-aware: profile.d vs update-motd.d)
   --zsh       zsh + Oh My Zsh + plugins + .zshrc
   --thefuck   thefuck via pipx (python3.11)
   --ssh       sshd hardening drop-in
-  --sudo      sudoers hardening (removes cloud-init NOPASSWD)
+  --sudo      sudoers hardening (removes NOPASSWD)
   --help      This message
 
 EOF
@@ -147,11 +206,11 @@ EOF
 
 interactive_menu() {
   echo ""
-  echo -e "  ${C}homelab-bootstrap${N} -- select modules:"
+  echo "  homelab-bootstrap -- select modules:"
   echo ""
   declare -A SEL
   for item in \
-    "motd:MOTD          -> /etc/profile.d/motd.sh" \
+    "motd:MOTD          -> distro-aware (profile.d / update-motd.d)" \
     "zsh:zsh            -> Oh My Zsh + plugins + .zshrc" \
     "thefuck:thefuck       -> pipx + python3.11" \
     "ssh:ssh hardening  -> sshd_config.d/99-hardening.conf" \
@@ -165,11 +224,14 @@ interactive_menu() {
   for mod in "${!SEL[@]}"; do "install_${mod}"; done
 }
 
+# ============================================================
+# Main
+# ============================================================
 detect_pkg_manager
 
 if [ $# -eq 0 ]; then
   interactive_menu
-  echo -e "\n${G}Done.${N}\n"
+  echo -e "\nDone.\n"
   exit 0
 fi
 
@@ -189,4 +251,4 @@ done
 
 [ "$DO_ALL" -eq 1 ] && install_motd && install_zsh && install_thefuck && install_ssh && install_sudo
 
-echo -e "\n${G}Done.${N}\n"
+echo -e "\nDone.\n"
