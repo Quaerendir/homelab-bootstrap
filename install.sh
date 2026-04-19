@@ -33,43 +33,72 @@ pkg_install() {
 # ============================================================
 # MODULE: motd
 # ============================================================
-install_motd() {
+{install_motd() {
   info "Installing custom MOTD..."
 
   if [ "$DISTRO_FAMILY" = "rhel" ]; then
-    # RHEL/Fedora: profile.d script, runs on interactive login
     sudo cp "$SCRIPT_DIR/motd/motd.sh" /etc/profile.d/motd.sh
     sudo chmod +x /etc/profile.d/motd.sh
-    # Silence Red Hat Insights prompt
-    [ -f /etc/motd.d/insights-client ] && sudo truncate -s 0 /etc/motd.d/insights-client \
+    [ -f /etc/motd.d/insights-client ] \
+      && sudo truncate -s 0 /etc/motd.d/insights-client \
       && warn "Silenced Red Hat Insights MOTD"
     sudo truncate -s 0 /etc/motd 2>/dev/null || true
     ok "MOTD installed -> /etc/profile.d/motd.sh"
 
   elif [ "$DISTRO_FAMILY" = "debian" ]; then
-    # Debian/Ubuntu: update-motd.d — run-parts via PAM on SSH login
     sudo mkdir -p /etc/update-motd.d
     sudo cp "$SCRIPT_DIR/motd/motd-debian.sh" /etc/update-motd.d/01-homelab
     sudo chmod +x /etc/update-motd.d/01-homelab
+    sudo truncate -s 0 /etc/motd 2>/dev/null || true
 
-    # Disable noisy default Ubuntu MOTD scripts
     for f in /etc/update-motd.d/10-help-text \
               /etc/update-motd.d/50-motd-news \
               /etc/update-motd.d/80-livepatch \
               /etc/update-motd.d/90-updates-available \
               /etc/update-motd.d/91-contract-ua-esm-status; do
-      [ -f "$f" ] && sudo chmod -x "$f" && warn "Disabled: $(basename $f)"
+      [ -f "$f" ] && sudo chmod -x "$f" && warn "Disabled: $(basename "$f")"
     done
 
-    # Ensure pam_motd runs update-motd.d (check /etc/pam.d/sshd)
-    if ! grep -q "pam_motd" /etc/pam.d/sshd 2>/dev/null; then
-      warn "pam_motd not found in /etc/pam.d/sshd -- MOTD may not show over SSH"
-      warn "Add this to /etc/pam.d/sshd: session optional pam_motd.so"
+    SSHD_CFG="/etc/ssh/sshd_config"
+    SSHD_DROP=""
+    if grep -qri "^UsePAM" /etc/ssh/sshd_config.d/ 2>/dev/null; then
+      SSHD_DROP=$(grep -rli "^UsePAM" /etc/ssh/sshd_config.d/ | head -n1)
     fi
 
-    # Silence static /etc/motd
-    sudo truncate -s 0 /etc/motd 2>/dev/null || true
+    fix_usepam() {
+      local file="$1"
+      if grep -qi "^UsePAM[[:space:]]*no" "$file"; then
+        sudo sed -i 's/^UsePAM[[:space:]]*no/UsePAM yes/' "$file"
+        warn "Fixed: UsePAM no -> yes in $file"
+      elif ! grep -qi "^UsePAM" "$file"; then
+        echo "UsePAM yes" | sudo tee -a "$file" > /dev/null
+        warn "Added: UsePAM yes to $file"
+      fi
+    }
+
+    if [ -n "$SSHD_DROP" ]; then
+      fix_usepam "$SSHD_DROP"
+    else
+      fix_usepam "$SSHD_CFG"
+    fi
+
+    PAM_SSHD="/etc/pam.d/sshd"
+    sudo sed -i '/pam_motd/d' "$PAM_SSHD"
+
+    if grep -q "@include common-session" "$PAM_SSHD"; then
+      sudo sed -i '/@include common-session/a session    optional     pam_motd.so\nsession    optional     pam_motd.so motd=/run/motd.dynamic noupdate' "$PAM_SSHD"
+    else
+      printf '\nsession    optional     pam_motd.so\nsession    optional     pam_motd.so motd=/run/motd.dynamic noupdate\n' | sudo tee -a "$PAM_SSHD" > /dev/null
+    fi
+
+    ok "Fixed pam.d/sshd -> pam_motd configured"
+
+    sudo sshd -t && sudo systemctl restart sshd \
+      && ok "sshd restarted" \
+      || die "sshd config invalid after changes!"
+
     ok "MOTD installed -> /etc/update-motd.d/01-homelab"
+    warn "Log in via a NEW SSH session to see the MOTD"
   fi
 }
 
