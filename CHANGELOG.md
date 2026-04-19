@@ -13,3 +13,10 @@
 - `.zshrc` backup before overwrite
 - `sshd -t` validation before restart
 - `visudo -cf` validation before sudoers deployment
+
+## [1.0.1] - 2026-04-19
+
+### Fixed
+- Debian/Ubuntu MOTD: enforce `UsePAM yes` (broken by passwordless SSH guides)
+- Debian/Ubuntu MOTD: rewrite `pam.d/sshd` motd lines to correct two-line sequence
+- `ssh/sshd_hardening.conf`: explicit `UsePAM yes` to prevent regression
