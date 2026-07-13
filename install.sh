@@ -1,16 +1,23 @@
 #!/usr/bin/env bash
 # ============================================================
 #  homelab-bootstrap -- install.sh
-#  Modular setup for RHEL / Fedora / Debian / Ubuntu
+#  Modular setup for RHEL / Fedora / Debian / Ubuntu / FreeBSD
 #
 #  Usage: ./install.sh [--all] [--motd] [--zsh] [--ssh] [--sudo] [--thefuck]
 #  No args = interactive menu
+#
+#  FreeBSD prereqs (base has no bash/curl/sudo/git):
+#    pkg install -y bash curl git sudo
 # ============================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 USER_HOME="${HOME}"
 CURRENT_USER="${USER}"
+
+# Fresh FreeBSD installs run as root without sudo -- make it optional
+SUDO="sudo"
+[ "$(id -u)" -eq 0 ] && SUDO=""
 
 R='\033[0;31m'; G='\033[0;32m'; Y='\033[0;33d'; C='\033[0;36m'; N='\033[0m'
 info() { echo -e "\033[0;36m[INFO]\033[0m  $*"; }
@@ -19,15 +26,24 @@ warn() { echo -e "\033[0;33m[WARN]\033[0m  $*"; }
 die()  { echo -e "\033[0;31m[ERROR]\033[0m $*"; exit 1; }
 
 detect_pkg_manager() {
-  if   command -v dnf &>/dev/null; then PKG="dnf"; DISTRO_FAMILY="rhel"
+  if [ "$(uname -s)" = "FreeBSD" ]; then
+    PKG="pkg"; DISTRO_FAMILY="freebsd"
+    if [ -n "$SUDO" ] && ! command -v sudo &>/dev/null; then
+      die "FreeBSD: run as root, or install sudo first: pkg install -y sudo"
+    fi
+  elif command -v dnf &>/dev/null; then PKG="dnf"; DISTRO_FAMILY="rhel"
   elif command -v apt &>/dev/null; then PKG="apt"; DISTRO_FAMILY="debian"
-  else die "Unsupported package manager (need dnf or apt)"; fi
+  else die "Unsupported package manager (need dnf, apt or FreeBSD pkg)"; fi
   info "Package manager: $PKG / family: $DISTRO_FAMILY"
 }
 
 pkg_install() {
   info "Installing packages: $*"
-  [ "$PKG" = "dnf" ] && sudo dnf install -y "$@" || sudo apt-get install -y "$@"
+  case "$PKG" in
+    dnf) sudo dnf install -y "$@" ;;
+    apt) sudo apt-get install -y "$@" ;;
+    pkg) $SUDO pkg install -y "$@" ;;
+  esac
 }
 
 # ============================================================
@@ -99,6 +115,34 @@ install_motd() {
 
     ok "MOTD installed -> /etc/update-motd.d/01-homelab"
     warn "Log in via a NEW SSH session to see the MOTD"
+
+  elif [ "$DISTRO_FAMILY" = "freebsd" ]; then
+    # No /etc/profile.d or update-motd.d on FreeBSD -- hook login rc files instead
+    $SUDO cp "$SCRIPT_DIR/motd/motd-freebsd.sh" /usr/local/etc/homelab-motd.sh
+    $SUDO chmod 644 /usr/local/etc/homelab-motd.sh
+
+    HOOK='[ -f /usr/local/etc/homelab-motd.sh ] && . /usr/local/etc/homelab-motd.sh'
+
+    # sh/bash login shells
+    if ! grep -qF 'homelab-motd.sh' /etc/profile 2>/dev/null; then
+      printf '\n# homelab-bootstrap MOTD\n%s\n' "$HOOK" | $SUDO tee -a /etc/profile > /dev/null
+      ok "Hooked -> /etc/profile"
+    fi
+    # zsh login shells (pkg zsh reads /usr/local/etc/zprofile)
+    if ! grep -qF 'homelab-motd.sh' /usr/local/etc/zprofile 2>/dev/null; then
+      printf '\n# homelab-bootstrap MOTD\n%s\n' "$HOOK" | $SUDO tee -a /usr/local/etc/zprofile > /dev/null
+      ok "Hooked -> /usr/local/etc/zprofile"
+    fi
+
+    # Neutralize base MOTD machinery so it doesn't double-print
+    $SUDO sysrc update_motd="NO" > /dev/null
+    [ -f /etc/motd.template ] && $SUDO truncate -s 0 /etc/motd.template   # 13.0+
+    [ -f /etc/motd ]          && $SUDO truncate -s 0 /etc/motd            # 12.x legacy
+    [ -f /var/run/motd ]      && $SUDO truncate -s 0 /var/run/motd
+    warn "Base MOTD disabled (sysrc update_motd=NO, templates truncated)"
+
+    ok "MOTD installed -> /usr/local/etc/homelab-motd.sh"
+    warn "csh/tcsh login shells will NOT source it (POSIX sh / bash / zsh only)"
   fi
 }
 
@@ -151,12 +195,25 @@ install_zsh() {
 # MODULE: thefuck
 # ============================================================
 install_thefuck() {
-  info "Installing thefuck via pipx..."
-  command -v pipx &>/dev/null || pkg_install pipx
-
   if command -v thefuck &>/dev/null; then
     warn "thefuck already installed, skipping."; return
   fi
+
+  if [ "$DISTRO_FAMILY" = "freebsd" ]; then
+    info "Installing thefuck via pkg..."
+    if $SUDO pkg install -y thefuck 2>/dev/null || $SUDO pkg install -y py311-thefuck 2>/dev/null; then
+      ok "thefuck installed via pkg"; return
+    fi
+    warn "No thefuck package in this pkg repo -- falling back to pipx"
+    command -v pipx &>/dev/null || pkg_install py311-pipx
+    pipx install thefuck || die "thefuck install failed."
+    pipx ensurepath
+    ok "thefuck ready"
+    return
+  fi
+
+  info "Installing thefuck via pipx..."
+  command -v pipx &>/dev/null || pkg_install pipx
 
   if command -v python3.11 &>/dev/null; then
     pipx install --python python3.11 thefuck && ok "thefuck installed (python3.11)"
@@ -181,6 +238,31 @@ install_thefuck() {
 install_ssh() {
   info "Deploying sshd hardening config..."
   SSHD_D="/etc/ssh/sshd_config.d"
+
+  if [ "$DISTRO_FAMILY" = "freebsd" ]; then
+    # Base sshd_config ships WITHOUT an Include directive -- add one at the top.
+    # OpenSSH is first-match-wins, so a top-of-file Include lets the drop-in
+    # override base defaults. Requires FreeBSD 13.0+ (OpenSSH >= 8.0).
+    $SUDO mkdir -p "$SSHD_D"
+    if ! grep -q '^Include[[:space:]]*/etc/ssh/sshd_config.d/' /etc/ssh/sshd_config; then
+      backup="/etc/ssh/sshd_config.bak.$(date +%Y%m%d%H%M%S)"
+      $SUDO cp /etc/ssh/sshd_config "$backup"
+      warn "Backed up sshd_config -> $backup"
+      tmp=$(mktemp)
+      printf 'Include /etc/ssh/sshd_config.d/*.conf\n\n' | cat - /etc/ssh/sshd_config > "$tmp"
+      $SUDO cp "$tmp" /etc/ssh/sshd_config
+      $SUDO chmod 644 /etc/ssh/sshd_config
+      rm -f "$tmp"
+      warn "Prepended Include directive to /etc/ssh/sshd_config"
+    fi
+    $SUDO cp "$SCRIPT_DIR/ssh/sshd_hardening.conf" "$SSHD_D/99-hardening.conf"
+    $SUDO chmod 600 "$SSHD_D/99-hardening.conf"
+    ok "Deployed -> $SSHD_D/99-hardening.conf"
+    $SUDO sshd -t && $SUDO service sshd restart \
+      && ok "sshd hardened and restarted" \
+      || die "sshd config validation failed! Fix before restarting."
+    return
+  fi
   if [ -d "$SSHD_D" ]; then
     sudo cp "$SCRIPT_DIR/ssh/sshd_hardening.conf" "$SSHD_D/99-hardening.conf"
     sudo chmod 600 "$SSHD_D/99-hardening.conf"
@@ -200,6 +282,26 @@ install_ssh() {
 # ============================================================
 install_sudo() {
   info "Deploying sudoers drop-in..."
+
+  if [ "$DISTRO_FAMILY" = "freebsd" ]; then
+    # sudo is a package on FreeBSD; config lives under /usr/local/etc
+    command -v sudo &>/dev/null || pkg_install sudo
+    TARGET="/usr/local/etc/sudoers.d/10-wheel-hardening"
+    $SUDO mkdir -p /usr/local/etc/sudoers.d
+    $SUDO cp "$SCRIPT_DIR/sudo/10-marek-hardening" "$TARGET"
+    $SUDO chmod 440 "$TARGET"
+    if ! $SUDO grep -Eq '^[@#]includedir[[:space:]]+/usr/local/etc/sudoers.d' /usr/local/etc/sudoers; then
+      warn "sudoers has no includedir -- add manually: @includedir /usr/local/etc/sudoers.d"
+    fi
+    [ -f /usr/local/etc/sudoers.d/90-cloud-init-users ] \
+      && $SUDO rm /usr/local/etc/sudoers.d/90-cloud-init-users \
+      && warn "Removed /usr/local/etc/sudoers.d/90-cloud-init-users (cloud-init NOPASSWD)"
+    $SUDO visudo -cf "$TARGET" \
+      && ok "sudoers drop-in deployed: $TARGET" \
+      || die "sudoers syntax error! Check $TARGET"
+    return
+  fi
+
   TARGET="/etc/sudoers.d/10-wheel-hardening"
   sudo cp "$SCRIPT_DIR/sudo/10-marek-hardening" "$TARGET"
   sudo chmod 440 "$TARGET"
