@@ -1,6 +1,8 @@
 # homelab-bootstrap
 
-Modular, idempotent setup script for RHEL / Fedora / Debian-based servers.
+Modular, idempotent setup script for RHEL / Fedora / Debian / Ubuntu / FreeBSD servers.
+
+![MOTD preview](images/motd-preview.png)
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/Quaerendir/homelab-bootstrap/main/install.sh)
@@ -16,13 +18,16 @@ cd homelab-bootstrap
 
 No arguments = interactive menu. Pick modules per host.
 
+> **FreeBSD:** base install has no bash/curl/sudo/git — bootstrap those first as root:
+> `pkg install -y bash curl git sudo`
+
 ---
 
 ## Modules
 
 | Flag | What it does |
 |------|-------------|
-| `--motd` | Dynamic MOTD -> `/etc/profile.d/motd.sh`, silences RH Insights prompt |
+| `--motd` | Dynamic MOTD, distro-aware: `profile.d` (RHEL), `update-motd.d`+PAM (Debian/Ubuntu), login-shell hook (FreeBSD). Silences RH Insights prompt. |
 | `--zsh` | zsh + Oh My Zsh + plugins (autosuggestions, syntax-highlighting, history-substring-search) + `.zshrc` |
 | `--thefuck` | thefuck via pipx using Python 3.11 (avoids distutils issue on 3.12+) |
 | `--ssh` | sshd hardening drop-in — no root, no passwords, keepalive. Validates before restart. |
@@ -59,8 +64,12 @@ homelab-bootstrap/
 ├── CONTRIBUTING.md
 ├── SECURITY.md
 ├── .gitignore
+├── images/
+│   └── motd-preview.svg             # README preview
 ├── motd/
-│   └── motd.sh                     # Dynamic MOTD script
+│   ├── motd.sh                      # RHEL/Fedora -> /etc/profile.d/motd.sh
+│   ├── motd-debian.sh                # Debian/Ubuntu -> /etc/update-motd.d/01-homelab
+│   └── motd-freebsd.sh               # FreeBSD -> /usr/local/etc/homelab-motd.sh
 ├── zsh/
 │   └── zshrc                       # .zshrc (OMZ + plugins + history + aliases)
 ├── ssh/
@@ -77,6 +86,7 @@ homelab-bootstrap/
 | Fedora 39+ | yes |
 | Debian 12 | yes |
 | Ubuntu 22.04 / 24.04 | yes |
+| FreeBSD 13.0+ | yes |
 
 ## Safety
 
@@ -84,6 +94,7 @@ homelab-bootstrap/
 - `--ssh` runs `sshd -t` validation before restart
 - `--sudo` runs `visudo -cf` before deployment
 - All modules are idempotent — safe to re-run
+- FreeBSD: `--ssh` backs up `sshd_config` before prepending the `Include` directive (base config ships without one); `--motd` disables the stock MOTD via `sysrc update_motd=NO` and only hooks `sh`/`bash`/`zsh` login shells — csh/tcsh won't source it
 - **Read [SECURITY.md](SECURITY.md) before running `--ssh` or `--sudo` on production**
 
 ## License
