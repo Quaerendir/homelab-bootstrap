@@ -29,7 +29,7 @@ No arguments = interactive menu. Pick modules per host.
 |------|-------------|
 | `--motd` | Dynamic MOTD, distro-aware: `profile.d` (RHEL), `update-motd.d`+PAM (Debian/Ubuntu), login-shell hook (FreeBSD). Silences RH Insights prompt. |
 | `--zsh` | zsh + Oh My Zsh + plugins (autosuggestions, syntax-highlighting, history-substring-search) + `.zshrc` |
-| `--thefuck` | thefuck via pipx using Python 3.11 (avoids distutils issue on 3.12+) |
+| `--pay-respects` | [pay-respects](https://github.com/iffse/pay-respects) — Rust `thefuck` replacement, single static binary, no Python runtime. Distro pkg → cargo → prebuilt binary. Press `f`. (`--thefuck` kept as a deprecated alias.) |
 | `--ssh` | sshd hardening drop-in — no root, no passwords, keepalive. Validates before restart. |
 | `--sudo` | sudoers drop-in — wheel with password. Removes cloud-init NOPASSWD. Validates before deploy. |
 | `--all` | All modules in sequence |
@@ -65,7 +65,7 @@ homelab-bootstrap/
 ├── SECURITY.md
 ├── .gitignore
 ├── images/
-│   └── motd-preview.svg             # README preview
+│   └── motd-preview.png             # README preview
 ├── motd/
 │   ├── motd.sh                      # RHEL/Fedora -> /etc/profile.d/motd.sh
 │   ├── motd-debian.sh                # Debian/Ubuntu -> /etc/update-motd.d/01-homelab
@@ -75,7 +75,7 @@ homelab-bootstrap/
 ├── ssh/
 │   └── sshd_hardening.conf         # sshd drop-in
 └── sudo/
-    └── 10-marek-hardening          # sudoers drop-in
+    └── 10-wheel-hardening          # sudoers drop-in
 ```
 
 ## Compatibility

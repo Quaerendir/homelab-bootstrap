@@ -3,7 +3,7 @@
 #  homelab-bootstrap -- install.sh
 #  Modular setup for RHEL / Fedora / Debian / Ubuntu / FreeBSD
 #
-#  Usage: ./install.sh [--all] [--motd] [--zsh] [--ssh] [--sudo] [--thefuck]
+#  Usage: ./install.sh [--all] [--motd] [--zsh] [--ssh] [--sudo] [--pay-respects]
 #  No args = interactive menu
 #
 #  FreeBSD prereqs (base has no bash/curl/sudo/git):
@@ -12,8 +12,11 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-USER_HOME="${HOME}"
-CURRENT_USER="${USER}"
+# $USER / $HOME aren't guaranteed in minimal environments (curl|bash on a fresh
+# VM, su without -l, cron, CI). Fall back to passwd db so `set -u` doesn't bite.
+CURRENT_USER="${USER:-$(id -un)}"
+USER_HOME="${HOME:-$(getent passwd "$CURRENT_USER" 2>/dev/null | cut -d: -f6)}"
+USER_HOME="${USER_HOME:-$HOME}"
 
 # Fresh FreeBSD installs run as root without sudo -- make it optional
 SUDO="sudo"
@@ -192,44 +195,60 @@ install_zsh() {
 }
 
 # ============================================================
-# MODULE: thefuck
+# MODULE: pay-respects  (thefuck replacement)
 # ============================================================
-install_thefuck() {
-  if command -v thefuck &>/dev/null; then
-    warn "thefuck already installed, skipping."; return
+# thefuck is effectively abandoned upstream and breaks on Python 3.12+
+# (distutils removed per PEP 632, no fallback). pay-respects is a Rust
+# rewrite: single static binary, sub-ms suggestions, no Python runtime.
+# Install order: distro package -> cargo (if a rust toolchain is present)
+# -> upstream prebuilt-binary installer.
+install_payrespects() {
+  if command -v pay-respects &>/dev/null; then
+    warn "pay-respects already installed, skipping."; return
   fi
 
+  # cargo helper: core + runtime-rules + request-ai modules
+  _cargo_payrespects() {
+    cargo install pay-respects \
+                  pay-respects-module-runtime-rules \
+                  pay-respects-module-request-ai
+  }
+
   if [ "$DISTRO_FAMILY" = "freebsd" ]; then
-    info "Installing thefuck via pkg..."
-    if $SUDO pkg install -y thefuck 2>/dev/null || $SUDO pkg install -y py311-thefuck 2>/dev/null; then
-      ok "thefuck installed via pkg"; return
+    info "Installing pay-respects on FreeBSD..."
+    # No prebuilt FreeBSD binaries upstream -- pkg if packaged, else cargo.
+    if $SUDO pkg install -y pay-respects 2>/dev/null; then
+      ok "pay-respects installed via pkg"; return
     fi
-    warn "No thefuck package in this pkg repo -- falling back to pipx"
-    command -v pipx &>/dev/null || pkg_install py311-pipx
-    pipx install thefuck || die "thefuck install failed."
-    pipx ensurepath
-    ok "thefuck ready"
+    if command -v cargo &>/dev/null; then
+      if _cargo_payrespects; then ok "pay-respects installed via cargo"; return; fi
+      warn "cargo install failed."
+    fi
+    warn "No pay-respects pkg and no rust toolchain."
+    warn "Install rust then re-run:  pkg install -y rust && ./install.sh --pay-respects"
     return
   fi
 
-  info "Installing thefuck via pipx..."
-  command -v pipx &>/dev/null || pkg_install pipx
+  info "Installing pay-respects..."
 
-  if command -v python3.11 &>/dev/null; then
-    pipx install --python python3.11 thefuck && ok "thefuck installed (python3.11)"
-  elif pipx install --fetch-missing-python --python 3.11 thefuck 2>/dev/null; then
-    ok "thefuck installed (pipx fetched python3.11)"
-  else
-    warn "python3.11 not found -- trying system Python (may fail on 3.12+)"
-    if [ "$DISTRO_FAMILY" = "rhel" ]; then
-      warn "Try: dnf install python3.11 && ./install.sh --thefuck"
-    else
-      warn "Try: apt install python3.11 && ./install.sh --thefuck"
-    fi
-    pipx install thefuck || die "thefuck install failed."
+  # 1) distro package (Fedora COPR / future apt) -- quiet miss, keep going
+  case "$PKG" in
+    dnf) if sudo dnf install -y pay-respects 2>/dev/null; then ok "installed via dnf"; return; fi ;;
+    apt) if sudo apt-get install -y pay-respects 2>/dev/null; then ok "installed via apt"; return; fi ;;
+  esac
+
+  # 2) cargo, if the box already has a rust toolchain
+  if command -v cargo &>/dev/null; then
+    info "rust toolchain detected -- installing via cargo..."
+    if _cargo_payrespects; then ok "pay-respects installed via cargo"; return; fi
+    warn "cargo install failed -- falling back to prebuilt binary"
   fi
-  pipx ensurepath
-  ok "thefuck ready"
+
+  # 3) upstream prebuilt-binary installer (x86_64 / aarch64 Linux)
+  info "Installing prebuilt binary via upstream install script..."
+  curl -fsSL https://raw.githubusercontent.com/iffse/pay-respects/main/install.sh | sh \
+    && ok "pay-respects installed (prebuilt binary)" \
+    || die "pay-respects install failed."
 }
 
 # ============================================================
@@ -288,7 +307,7 @@ install_sudo() {
     command -v sudo &>/dev/null || pkg_install sudo
     TARGET="/usr/local/etc/sudoers.d/10-wheel-hardening"
     $SUDO mkdir -p /usr/local/etc/sudoers.d
-    $SUDO cp "$SCRIPT_DIR/sudo/10-marek-hardening" "$TARGET"
+    $SUDO cp "$SCRIPT_DIR/sudo/10-wheel-hardening" "$TARGET"
     $SUDO chmod 440 "$TARGET"
     if ! $SUDO grep -Eq '^[@#]includedir[[:space:]]+/usr/local/etc/sudoers.d' /usr/local/etc/sudoers; then
       warn "sudoers has no includedir -- add manually: @includedir /usr/local/etc/sudoers.d"
@@ -303,7 +322,7 @@ install_sudo() {
   fi
 
   TARGET="/etc/sudoers.d/10-wheel-hardening"
-  sudo cp "$SCRIPT_DIR/sudo/10-marek-hardening" "$TARGET"
+  sudo cp "$SCRIPT_DIR/sudo/10-wheel-hardening" "$TARGET"
   sudo chmod 440 "$TARGET"
   [ -f /etc/sudoers.d/90-cloud-init-users ] \
     && sudo rm /etc/sudoers.d/90-cloud-init-users \
@@ -327,7 +346,7 @@ usage() {
   --all       Run all modules
   --motd      Custom MOTD (distro-aware: profile.d vs update-motd.d)
   --zsh       zsh + Oh My Zsh + plugins + .zshrc
-  --thefuck   thefuck via pipx (python3.11)
+  --pay-respects  pay-respects (Rust thefuck replacement); alias: --thefuck
   --ssh       sshd hardening drop-in
   --sudo      sudoers hardening (removes NOPASSWD)
   --help      This message
@@ -343,7 +362,7 @@ interactive_menu() {
   for item in \
     "motd:MOTD          -> distro-aware (profile.d / update-motd.d)" \
     "zsh:zsh            -> Oh My Zsh + plugins + .zshrc" \
-    "thefuck:thefuck       -> pipx + python3.11" \
+    "payrespects:pay-respects   -> Rust thefuck replacement (press f)" \
     "ssh:ssh hardening  -> sshd_config.d/99-hardening.conf" \
     "sudo:sudo hardening -> removes cloud-init NOPASSWD"
   do
@@ -372,7 +391,8 @@ for arg in "$@"; do
     --all)     DO_ALL=1 ;;
     --motd)    install_motd ;;
     --zsh)     install_zsh ;;
-    --thefuck) install_thefuck ;;
+    --pay-respects|--payrespects) install_payrespects ;;
+    --thefuck) warn "--thefuck is deprecated -> installing pay-respects instead"; install_payrespects ;;
     --ssh)     install_ssh ;;
     --sudo)    install_sudo ;;
     --help|-h) usage; exit 0 ;;
@@ -380,6 +400,6 @@ for arg in "$@"; do
   esac
 done
 
-[ "$DO_ALL" -eq 1 ] && install_motd && install_zsh && install_thefuck && install_ssh && install_sudo
+[ "$DO_ALL" -eq 1 ] && install_motd && install_zsh && install_payrespects && install_ssh && install_sudo
 
 echo -e "\nDone.\n"

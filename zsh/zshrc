@@ -38,10 +38,20 @@ bindkey "$terminfo[kcud1]" history-substring-search-down
 
 [[ -o interactive ]] && stty -ixon
 
-# --- thefuck ---
-if command -v thefuck &>/dev/null; then
-  eval $(thefuck --alias)
+# --- pay-respects (thefuck replacement; press f, or ^f for 'fuck') ---
+if command -v pay-respects &>/dev/null; then
+  eval "$(pay-respects zsh --alias fuck)"
   bindkey -s '^f' 'fuck\n'
+
+  # Optional AI fallback (request-ai module). Route it at a local Ollama box
+  # instead of the public endpoint. Note: OpenAI-compatible /v1 path, NOT the
+  # native Ollama API. API key can be any non-empty string for Ollama.
+  # export _PR_AI_URL="http://127.0.0.1:11434/v1/chat/completions"
+  # export _PR_AI_MODEL="qwen3-coder-next"
+  # export _PR_AI_API_KEY="ollama"
+  #
+  # Rules-only mode (kill the AI fallback, e.g. when the endpoint is unreachable):
+  # export _PR_AI_DISABLE=1
 fi
 
 # --- History ---
