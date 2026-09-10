@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
 # ============================================================
 #  homelab-bootstrap -- install.sh
-#  Modular setup for RHEL / Fedora / Debian / Ubuntu / FreeBSD
+#  Modular setup for RHEL / Fedora / Debian / Ubuntu / FreeBSD / Solaris
 #
 #  Usage: ./install.sh [--all] [--motd] [--zsh] [--ssh] [--sudo] [--pay-respects]
 #  No args = interactive menu
 #
 #  FreeBSD prereqs (base has no bash/curl/sudo/git):
 #    pkg install -y bash curl git sudo
+#
+#  Solaris 11.4 prereqs (minimal images may lack bash/curl/sudo/git):
+#    pkg install shell/bash web/curl developer/versioning/git security/sudo
+#  IPS package (FMRI) names below are best-effort -- verify against your
+#  publisher/repo if `pkg install` reports "no matching package".
 # ============================================================
 set -euo pipefail
 
@@ -34,11 +39,27 @@ detect_pkg_manager() {
     if [ -n "$SUDO" ] && ! command -v sudo &>/dev/null; then
       die "FreeBSD: run as root, or install sudo first: pkg install -y sudo"
     fi
+  elif [ "$(uname -s)" = "SunOS" ]; then
+    # PKG="ips" (not "pkg") -- Solaris's package command is also literally
+    # named `pkg`, but the CLI syntax/exit codes differ from FreeBSD's pkg(8).
+    PKG="ips"; DISTRO_FAMILY="solaris"
+    if [ -n "$SUDO" ] && ! command -v sudo &>/dev/null; then
+      die "Solaris: run as root, or install sudo first: pkg install security/sudo"
+    fi
   elif command -v dnf &>/dev/null; then PKG="dnf"; DISTRO_FAMILY="rhel"
   elif command -v apt &>/dev/null; then PKG="apt"; DISTRO_FAMILY="debian"
-  else die "Unsupported package manager (need dnf, apt or FreeBSD pkg)"; fi
+  else die "Unsupported package manager (need dnf, apt, FreeBSD pkg or Solaris IPS)"; fi
   info "Package manager: $PKG / family: $DISTRO_FAMILY"
 }
+
+# Common tool names -> Solaris IPS FMRIs (best-effort, verify on your image)
+declare -A SOLARIS_PKG_MAP=(
+  [bash]="shell/bash"
+  [zsh]="shell/zsh"
+  [git]="developer/versioning/git"
+  [curl]="web/curl"
+  [sudo]="security/sudo"
+)
 
 pkg_install() {
   info "Installing packages: $*"
@@ -46,6 +67,21 @@ pkg_install() {
     dnf) sudo dnf install -y "$@" ;;
     apt) sudo apt-get install -y "$@" ;;
     pkg) $SUDO pkg install -y "$@" ;;
+    ips)
+      local mapped=() n rc=0
+      for n in "$@"; do mapped+=("${SOLARIS_PKG_MAP[$n]:-$n}"); done
+      # `rc=$?` after `! cmd` would capture the NEGATED status, not cmd's real
+      # exit code -- `cmd || rc=$?` is the idiom that keeps both the real code
+      # and set -e's exemption (cmd is not the list's last element).
+      $SUDO pkg install -q "${mapped[@]}" || rc=$?
+      # exit 4 = "no changes were made" (already installed/up to date)
+      if [ "$rc" -ne 0 ] && [ "$rc" -ne 4 ]; then
+        warn "pkg install failed (exit $rc): ${mapped[*]}"
+        return "$rc"
+      elif [ "$rc" -eq 4 ]; then
+        warn "Already installed: ${mapped[*]}"
+      fi
+      ;;
   esac
 }
 
@@ -146,6 +182,33 @@ install_motd() {
 
     ok "MOTD installed -> /usr/local/etc/homelab-motd.sh"
     warn "csh/tcsh login shells will NOT source it (POSIX sh / bash / zsh only)"
+
+  elif [ "$DISTRO_FAMILY" = "solaris" ]; then
+    # No /etc/profile.d or update-motd.d on Solaris -- hook login rc files instead
+    $SUDO cp "$SCRIPT_DIR/motd/motd-solaris.sh" /etc/homelab-motd.sh
+    $SUDO chmod 644 /etc/homelab-motd.sh
+
+    HOOK='[ -f /etc/homelab-motd.sh ] && . /etc/homelab-motd.sh'
+
+    # Solaris's native /usr/bin/grep has no -F (and /usr/bin/fgrep has no -q) --
+    # plain BRE `grep -q` is the only idempotency check that actually works here.
+    # sh/ksh/bash login shells
+    if ! grep -q 'homelab-motd.sh' /etc/profile 2>/dev/null; then
+      printf '\n# homelab-bootstrap MOTD\n%s\n' "$HOOK" | $SUDO tee -a /etc/profile > /dev/null
+      ok "Hooked -> /etc/profile"
+    fi
+    # zsh login shells (default ZSH_CONFIGDIR is /etc unless the pkg overrides it)
+    if ! grep -q 'homelab-motd.sh' /etc/zprofile 2>/dev/null; then
+      printf '\n# homelab-bootstrap MOTD\n%s\n' "$HOOK" | $SUDO tee -a /etc/zprofile > /dev/null
+      ok "Hooked -> /etc/zprofile"
+    fi
+
+    # sshd prints /etc/motd directly (PrintMotd), independent of shell profiles
+    [ -f /etc/motd ] && $SUDO truncate -s 0 /etc/motd
+    warn "Base /etc/motd truncated to avoid double-printing"
+
+    ok "MOTD installed -> /etc/homelab-motd.sh"
+    warn "csh/tcsh login shells will NOT source it (POSIX sh / bash / zsh only)"
   fi
 }
 
@@ -187,9 +250,16 @@ install_zsh() {
 
   ZSH_PATH=$(which zsh)
   if [ "$SHELL" != "$ZSH_PATH" ]; then
-    chsh -s "$ZSH_PATH" "$CURRENT_USER" \
-      && ok "Default shell set to zsh" \
-      || warn "chsh failed -- set manually: chsh -s $ZSH_PATH"
+    if [ "$DISTRO_FAMILY" = "solaris" ]; then
+      # Solaris has no chsh(1) -- shell change goes through usermod(8)
+      $SUDO usermod -s "$ZSH_PATH" "$CURRENT_USER" \
+        && ok "Default shell set to zsh (usermod)" \
+        || warn "usermod failed -- set manually: usermod -s $ZSH_PATH $CURRENT_USER"
+    else
+      chsh -s "$ZSH_PATH" "$CURRENT_USER" \
+        && ok "Default shell set to zsh" \
+        || warn "chsh failed -- set manually: chsh -s $ZSH_PATH"
+    fi
   fi
   ok "zsh + Oh My Zsh fully configured"
 }
@@ -226,6 +296,18 @@ install_payrespects() {
     fi
     warn "No pay-respects pkg and no rust toolchain."
     warn "Install rust then re-run:  pkg install -y rust && ./install.sh --pay-respects"
+    return
+  fi
+
+  if [ "$DISTRO_FAMILY" = "solaris" ]; then
+    info "Installing pay-respects on Solaris..."
+    # No IPS package upstream and no prebuilt Solaris/illumos binary -- cargo only.
+    if command -v cargo &>/dev/null; then
+      if _cargo_payrespects; then ok "pay-respects installed via cargo"; return; fi
+      warn "cargo install failed."
+    fi
+    warn "No pay-respects package for Solaris and no rust toolchain."
+    warn "Install rust then re-run:  pkg install developer/rust/cargo developer/rust/rustc && ./install.sh --pay-respects"
     return
   fi
 
@@ -282,6 +364,33 @@ install_ssh() {
       || die "sshd config validation failed! Fix before restarting."
     return
   fi
+
+  if [ "$DISTRO_FAMILY" = "solaris" ]; then
+    # sshd binary isn't on $PATH by default; sshd is SMF-managed, not systemd.
+    SSHD_BIN="/usr/lib/ssh/sshd"
+    $SUDO mkdir -p "$SSHD_D"
+    # Native Solaris /usr/bin/grep has no [[:space:]] (pre-XPG4 BRE) -- use `.` instead
+    if ! grep -q '^Include.*sshd_config\.d' /etc/ssh/sshd_config; then
+      backup="/etc/ssh/sshd_config.bak.$(date +%Y%m%d%H%M%S)"
+      $SUDO cp /etc/ssh/sshd_config "$backup"
+      warn "Backed up sshd_config -> $backup"
+      tmp=$(mktemp)
+      printf 'Include /etc/ssh/sshd_config.d/*.conf\n\n' | cat - /etc/ssh/sshd_config > "$tmp"
+      $SUDO cp "$tmp" /etc/ssh/sshd_config
+      $SUDO chmod 644 /etc/ssh/sshd_config
+      rm -f "$tmp"
+      warn "Prepended Include directive to /etc/ssh/sshd_config"
+    fi
+    $SUDO cp "$SCRIPT_DIR/ssh/sshd_hardening.conf" "$SSHD_D/99-hardening.conf"
+    $SUDO chmod 600 "$SSHD_D/99-hardening.conf"
+    ok "Deployed -> $SSHD_D/99-hardening.conf"
+    $SUDO "$SSHD_BIN" -t \
+      && $SUDO svcadm restart svc:/network/ssh:default \
+      && ok "sshd hardened and restarted (SMF)" \
+      || die "sshd config validation failed! Fix before restarting."
+    return
+  fi
+
   if [ -d "$SSHD_D" ]; then
     sudo cp "$SCRIPT_DIR/ssh/sshd_hardening.conf" "$SSHD_D/99-hardening.conf"
     sudo chmod 600 "$SSHD_D/99-hardening.conf"
@@ -315,6 +424,23 @@ install_sudo() {
     [ -f /usr/local/etc/sudoers.d/90-cloud-init-users ] \
       && $SUDO rm /usr/local/etc/sudoers.d/90-cloud-init-users \
       && warn "Removed /usr/local/etc/sudoers.d/90-cloud-init-users (cloud-init NOPASSWD)"
+    $SUDO visudo -cf "$TARGET" \
+      && ok "sudoers drop-in deployed: $TARGET" \
+      || die "sudoers syntax error! Check $TARGET"
+    return
+  fi
+
+  if [ "$DISTRO_FAMILY" = "solaris" ]; then
+    command -v sudo &>/dev/null || pkg_install sudo
+    TARGET="/etc/sudoers.d/10-wheel-hardening"
+    $SUDO mkdir -p /etc/sudoers.d
+    $SUDO cp "$SCRIPT_DIR/sudo/10-wheel-hardening" "$TARGET"
+    $SUDO chmod 440 "$TARGET"
+    # Native Solaris /usr/bin/grep has neither -E nor [[:space:]] -- use `.` instead
+    if ! $SUDO grep -q '^[@#]includedir.*sudoers\.d' /etc/sudoers; then
+      warn "sudoers has no includedir -- add manually: @includedir /etc/sudoers.d"
+    fi
+    warn "Solaris has no 'wheel' group by default -- create it and add users manually"
     $SUDO visudo -cf "$TARGET" \
       && ok "sudoers drop-in deployed: $TARGET" \
       || die "sudoers syntax error! Check $TARGET"
