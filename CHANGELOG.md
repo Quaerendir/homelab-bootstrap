@@ -53,6 +53,16 @@
   "already installed" run was misreported as "pkg install failed (exit 0)".
   Fixed with the `cmd || rc=$?` idiom, which preserves both the real exit
   code and `set -e`'s exemption for non-final members of an `||` list.
+- `motd.sh` and `motd-debian.sh` showed a blank CPU model on ARM boards
+  (Raspberry Pi and most SBCs) -- `/proc/cpuinfo` has no `model name` line on
+  ARM, only per-core implementer/part/revision fields, so `CPU_CORES` still
+  worked but `CPU_MODEL` came back empty. Added a fallback chain:
+  `/proc/device-tree/model` (works across most ARM SBCs, Pi included) first,
+  then `/proc/cpuinfo`'s trailing `Model` line (Raspberry Pi's own field) if
+  that file isn't present. Verified live on both a Raspberry Pi 4 (AlmaLinux
+  8.10 aarch64, `motd.sh`) and a Raspberry Pi 5 (Debian 13 trixie,
+  `motd-debian.sh`) -- both went from a blank CPU field to the correct
+  "Raspberry Pi N Model B Rev X.Y" string, deployed live on both boxes.
 
 ## [1.0.0] - 2026-04-18
 

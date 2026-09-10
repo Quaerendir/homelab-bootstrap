@@ -19,6 +19,11 @@ DISK_PCT=$(df / | awk 'NR==2{print $5}' | tr -d '%')
 IP_ADDR=$(hostname -I 2>/dev/null | awk '{print $1}')
 USERS=$(who | wc -l)
 CPU_MODEL=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs)
+# ARM boards (Raspberry Pi and most SBCs) have no "model name" in /proc/cpuinfo --
+# /proc/device-tree/model has the friendly board name instead (Pi included).
+[ -z "$CPU_MODEL" ] && [ -r /proc/device-tree/model ] && CPU_MODEL=$(tr -d '\0' < /proc/device-tree/model)
+# Older/non-devicetree kernels: /proc/cpuinfo's trailing "Model" line (Raspberry Pi's own field)
+[ -z "$CPU_MODEL" ] && CPU_MODEL=$(grep -m1 '^Model' /proc/cpuinfo | cut -d: -f2 | xargs)
 CPU_CORES=$(nproc)
 DATE_NOW=$(date '+%A, %d %B %Y  %H:%M')
 
