@@ -25,6 +25,14 @@
   - All 4 modules verified live over SSH against a real Solaris 11.4 box
     (`pkg`, `kstat`, `df`, `route`, `ifconfig`, `sshd`, `svcadm`, `usermod`
     output all confirmed directly), each run twice to confirm idempotency.
+  - README: documented a client-side SSH gotcha found during that testing --
+    Solaris 11.4 x86 only ships a handful of locales (no `pl_PL`/`en_GB`, and
+    no installable package for the missing ones), so a client that forwards
+    `LANG`/`LC_*` (common OpenSSH default) triggers a perl locale warning from
+    `kstat` and other perl-based tools on every login. A `SendEnv -LANG -LC_*`
+    override doesn't fix it (SendEnv accumulates across config files instead
+    of first-match-wins); `SetEnv LANG=... LC_ADDRESS=... ...` pinned to an
+    installed locale does.
 
 ### Fixed
 - Solaris `pay-respects` fallback hint referenced a nonexistent `developer/rust`
