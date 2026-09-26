@@ -1,6 +1,6 @@
 # homelab-bootstrap
 
-Modular, idempotent setup script for RHEL / Fedora / Debian / Ubuntu / FreeBSD / Solaris servers.
+Modular, idempotent setup script for RHEL / Fedora / Debian / Ubuntu / FreeBSD / Solaris / NetBSD servers.
 
 ![MOTD preview](images/motd-preview.png)
 
@@ -24,13 +24,17 @@ No arguments = interactive menu. Pick modules per host.
 > **Solaris 11.4:** minimal images may lack bash/curl/sudo/git — bootstrap those first as root:
 > `pkg install shell/bash web/curl developer/versioning/git security/sudo`
 
+> **NetBSD 10.1:** base install has no `pkgin` configured and no bash/curl/git —
+> `pkgin` is bootstrapped automatically, but you need bash+git to run the script itself:
+> `export PKG_PATH="https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/$(uname -p)/$(uname -r|cut -f '1 2' -d.|cut -f 1 -d_)/All/"; pkg_add bash git`
+
 ---
 
 ## Modules
 
 | Flag | What it does |
 |------|-------------|
-| `--motd` | Dynamic MOTD, distro-aware: `profile.d` (RHEL), `update-motd.d`+PAM (Debian/Ubuntu), login-shell hook (FreeBSD, Solaris). Silences RH Insights prompt. |
+| `--motd` | Dynamic MOTD, distro-aware: `profile.d` (RHEL), `update-motd.d`+PAM (Debian/Ubuntu), login-shell hook (FreeBSD, Solaris, NetBSD). Silences RH Insights prompt. |
 | `--zsh` | zsh + Oh My Zsh + plugins (autosuggestions, syntax-highlighting, history-substring-search) + `.zshrc` |
 | `--pay-respects` | [pay-respects](https://github.com/iffse/pay-respects) — Rust `thefuck` replacement, single static binary, no Python runtime. Distro pkg → cargo → prebuilt binary. Press `f`. (`--thefuck` kept as a deprecated alias.) |
 | `--ssh` | sshd hardening drop-in — no root, no passwords, keepalive. Validates before restart. |
@@ -73,7 +77,8 @@ homelab-bootstrap/
 │   ├── motd.sh                      # RHEL/Fedora -> /etc/profile.d/motd.sh
 │   ├── motd-debian.sh                # Debian/Ubuntu -> /etc/update-motd.d/01-homelab
 │   ├── motd-freebsd.sh               # FreeBSD -> /usr/local/etc/homelab-motd.sh
-│   └── motd-solaris.sh               # Solaris -> /etc/homelab-motd.sh
+│   ├── motd-solaris.sh               # Solaris -> /etc/homelab-motd.sh
+│   └── motd-netbsd.sh                # NetBSD -> /etc/homelab-motd.sh
 ├── zsh/
 │   └── zshrc                       # .zshrc (OMZ + plugins + history + aliases)
 ├── ssh/
@@ -92,6 +97,7 @@ homelab-bootstrap/
 | Ubuntu 22.04 / 24.04 | yes |
 | FreeBSD 13.0+ | yes |
 | Solaris 11.4 | yes (all 4 modules verified live via SSH, 2026-09-10) |
+| NetBSD 10.1 | yes (all 5 modules verified live via SSH, 2026-09-26) |
 
 ## Safety
 
@@ -102,6 +108,8 @@ homelab-bootstrap/
 - FreeBSD: `--ssh` backs up `sshd_config` before prepending the `Include` directive (base config ships without one); `--motd` disables the stock MOTD via `sysrc update_motd=NO` and only hooks `sh`/`bash`/`zsh` login shells — csh/tcsh won't source it
 - Solaris: `--ssh` backs up `sshd_config` before prepending `Include` (SMF-restarted via `svcadm`, validated with the full `/usr/lib/ssh/sshd` path since it isn't on `$PATH`); `--motd` truncates `/etc/motd` (sshd's `PrintMotd` reads it directly) and only hooks `sh`/`ksh`/`bash`/`zsh` login shells; `--sudo` needs a `wheel` group to exist (Solaris has none by default) and warns if `/etc/sudoers` has no `includedir`; `--zsh` sets the login shell via `usermod` (no `chsh` on Solaris). All four modules were run twice in a row against a live Solaris 11.4 box to confirm idempotency (no duplicate hooks/Include lines/backups on the second run). Native `/usr/bin/grep` on Solaris is a pre-XPG4 SVR4 grep with **no `-F`, no `-E`, no `[[:space:]]`** — every Solaris-branch `grep` call in `install.sh` avoids these deliberately; don't "clean up" them to match the GNU/BSD-grep style used elsewhere in the file. IPS package names in `pkg_install()` are best-effort — verify against your publisher.
 - **Solaris SSH client gotcha (unrelated to this script, but hits every login):** if your SSH client forwards `LANG`/`LC_*` (common OpenSSH default, `SendEnv LANG LC_*` in `/etc/ssh/ssh_config` or `~/.ssh/config`) and your locale isn't one of the handful Oracle ships for Solaris 11.4 x86 (`locale -a`: only `de_DE`, `en_US`, `es_ES`, `fr_FR`, `it_IT`, `ja_JP`, `ko_KR`, `pt_BR`, `zh_CN`, `zh_TW` — no `pl_PL`, no `en_GB`, and there's no installable package for the missing ones from the `solaris` publisher), every perl-based tool invoked at login (the stock `/etc/profile`'s mail check, `kstat` used by `motd-solaris.sh`, etc.) prints a `perl: warning: Setting locale failed` block on every connection. A plain `SendEnv -LANG -LC_*` override in `~/.ssh/config` **does not fix this** — it loses to a broader `SendEnv LANG LC_*` in `/etc/ssh/ssh_config` because SendEnv patterns accumulate across config files rather than "first match wins". What does work: `SetEnv LANG=en_US.UTF-8 LC_ADDRESS=en_US.UTF-8 ...` (one `SetEnv` per forwarded `LC_*` name, pinned to an installed locale) in the client's `Host` block for that box.
+- NetBSD: `--ssh` backs up `sshd_config` before prepending `Include` (restarted via `/etc/rc.d/sshd restart` -- no `service` command on NetBSD); `--motd` truncates `/etc/motd` and only hooks `sh`/`bash`/`zsh` login shells, and explicitly prepends `/sbin:/usr/sbin` to `$PATH` inside the script itself since NetBSD's own default `$PATH` (unlike FreeBSD's) excludes them; `--sudo` deploys under `/usr/pkg/etc/sudoers.d` (pkgsrc prefix, not `/etc`) and needs no `includedir`/`wheel`-group workarounds (both already there by default, unlike Solaris); `--zsh` uses the generic `chsh` path (NetBSD has it in base, unlike Solaris).
+- **`--ssh`'s `PermitRootLogin no` disables root SSH login *entirely* — pubkey included, not just passwords.** This bit us during NetBSD testing: applying `--ssh` to a box where root (via SSH key) is the *only* working account locks out every remaining session immediately, with no fallback but the hypervisor/local console. Make sure a non-root account with working key-based `sudo`/`su` access exists **before** running `--ssh` on a root-only box.
 - **Read [SECURITY.md](SECURITY.md) before running `--ssh` or `--sudo` on production**
 
 ## License

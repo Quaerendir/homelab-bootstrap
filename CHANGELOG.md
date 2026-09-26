@@ -3,6 +3,36 @@
 ## [Unreleased]
 
 ### Added
+- **NetBSD 10.1 support** across all modules:
+  - Package manager: pkgsrc via `pkgin` detected via `uname -s = NetBSD`
+    (`PKG="pkgin"`); bootstraps `pkgin` itself via `pkg_add` + `PKG_PATH` against
+    the official binary package CDN if missing (a fresh NetBSD install has
+    neither `pkgin` nor any package manager configured out of the box).
+  - `--motd`: new `motd/motd-netbsd.sh` (`sysctl`/`vmstat -s` based CPU/memory/
+    uptime, no `/proc`, no `free`, no ZFS), hooked into `/etc/profile` and
+    `/usr/pkg/etc/zprofile` (pkgsrc zsh's compiled-in global zprofile path,
+    confirmed via `strings` against the actual binary), truncates `/etc/motd`
+    since sshd's `PrintMotd` reads it directly. Explicitly prepends
+    `/sbin:/usr/sbin` to `$PATH` inside the script itself -- unlike FreeBSD,
+    NetBSD's compiled-in default `$PATH` (used before `~/.profile` extends it)
+    excludes both, so every command silently failed without this.
+  - `--ssh`: prepends `Include /etc/ssh/sshd_config.d/*.conf` if missing (backs
+    up first, same as FreeBSD), restarts via `/etc/rc.d/sshd restart` (rc.d, not
+    systemd/SMF/`service` -- NetBSD has no `service` command at all).
+  - `--sudo`: deploys `/usr/pkg/etc/sudoers.d/10-wheel-hardening` -- sudo is a
+    pkgsrc package (config lives under the `/usr/pkg` prefix, not `/etc`), and
+    pkgsrc's `sudoers` already ships with `@includedir` wired in, so (unlike
+    FreeBSD/Solaris) there's nothing to check or warn about there. `wheel`
+    group already exists by default (root is a member out of the box).
+  - `--zsh`: needs no special case -- NetBSD ships `chsh(1)` in base, so the
+    generic (RHEL/Debian) code path just works.
+  - `--pay-respects`: no pkgsrc package and no prebuilt NetBSD binary upstream
+    -- cargo-only install path, same as the FreeBSD/Solaris fallback.
+  - All modules verified live over SSH against a real NetBSD 10.1/amd64 VM
+    (`pkgin`, `sysctl`, `vmstat`, `route`, `ifconfig`, `sshd`, `rc.d`, `chsh`
+    output all confirmed directly), `--motd`/`--sudo` re-run to confirm
+    idempotency.
+
 - **Solaris 11.4 support** across all modules:
   - Package manager: IPS `pkg` detected via `uname -s = SunOS` (`PKG="ips"`, distinct
     from FreeBSD's `pkg` name/syntax), with a common-name -> FMRI map
@@ -35,6 +65,11 @@
     installed locale does.
 
 ### Fixed
+- NetBSD `--motd`: `vmstat -s | awk '/pages free/{print $1}'` matched *two*
+  lines ("pages free" and the later "pages freed by daemon" -- "free" is a
+  substring of "freed") and returned both numbers, breaking the `$(( ))`
+  memory calculation with "variable contains non-numeric value". Anchored the
+  pattern on `$` (`/pages free$/`) to match only the exact line.
 - Solaris `pay-respects` fallback hint referenced a nonexistent `developer/rust`
   FMRI -- corrected to `developer/rust/cargo` + `developer/rust/rustc` (Rust is
   split into separate compiler/toolchain packages on Solaris's IPS).

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================
 #  homelab-bootstrap -- install.sh
-#  Modular setup for RHEL / Fedora / Debian / Ubuntu / FreeBSD / Solaris
+#  Modular setup for RHEL / Fedora / Debian / Ubuntu / FreeBSD / Solaris / NetBSD
 #
 #  Usage: ./install.sh [--all] [--motd] [--zsh] [--ssh] [--sudo] [--pay-respects]
 #  No args = interactive menu
@@ -13,6 +13,12 @@
 #    pkg install shell/bash web/curl developer/versioning/git security/sudo
 #  IPS package (FMRI) names below are best-effort -- verify against your
 #  publisher/repo if `pkg install` reports "no matching package".
+#
+#  NetBSD prereqs (base has no bash/curl/sudo/git, likely no pkgin either):
+#    pkgin is bootstrapped automatically via pkg_add if missing; you still
+#    need bash+git at minimum to run this script itself:
+#    export PKG_PATH="https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/$(uname -p)/$(uname -r|cut -f '1 2' -d.|cut -f 1 -d_)/All/"
+#    pkg_add bash git
 # ============================================================
 set -euo pipefail
 
@@ -46,6 +52,23 @@ detect_pkg_manager() {
     if [ -n "$SUDO" ] && ! command -v sudo &>/dev/null; then
       die "Solaris: run as root, or install sudo first: pkg install security/sudo"
     fi
+  elif [ "$(uname -s)" = "NetBSD" ]; then
+    # Base has no binary package manager pre-configured -- pkgin (pkgsrc) is
+    # bootstrapped via pkg_add if missing, same as a fresh NetBSD install.
+    PKG="pkgin"; DISTRO_FAMILY="netbsd"
+    if ! command -v pkgin &>/dev/null; then
+      warn "pkgin not found -- bootstrapping via pkg_add"
+      REL="$(uname -r | cut -f '1 2' -d. | cut -f 1 -d_)"
+      PKG_PATH="https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/$(uname -p)/$REL/All/"
+      export PKG_PATH
+      $SUDO /usr/sbin/pkg_add pkgin \
+        || die "pkgin bootstrap failed -- check PKG_PATH: $PKG_PATH"
+      echo "$PKG_PATH" | $SUDO tee /usr/pkg/etc/pkgin/repositories.conf > /dev/null
+      /usr/pkg/bin/pkgin -y update
+    fi
+    if [ -n "$SUDO" ] && ! command -v sudo &>/dev/null; then
+      die "NetBSD: run as root, or install sudo first: pkgin install sudo"
+    fi
   elif command -v dnf &>/dev/null; then PKG="dnf"; DISTRO_FAMILY="rhel"
   elif command -v apt &>/dev/null; then PKG="apt"; DISTRO_FAMILY="debian"
   else die "Unsupported package manager (need dnf, apt, FreeBSD pkg or Solaris IPS)"; fi
@@ -67,6 +90,9 @@ pkg_install() {
     dnf) sudo dnf install -y "$@" ;;
     apt) sudo apt-get install -y "$@" ;;
     pkg) $SUDO pkg install -y "$@" ;;
+    # Full path -- /usr/pkg/bin isn't guaranteed on $PATH for every caller
+    # (su without -l, cron, a bare `bash install.sh` right after bootstrap).
+    pkgin) $SUDO /usr/pkg/bin/pkgin -y install "$@" ;;
     ips)
       local mapped=() n rc=0
       for n in "$@"; do mapped+=("${SOLARIS_PKG_MAP[$n]:-$n}"); done
@@ -209,6 +235,32 @@ install_motd() {
 
     ok "MOTD installed -> /etc/homelab-motd.sh"
     warn "csh/tcsh login shells will NOT source it (POSIX sh / bash / zsh only)"
+
+  elif [ "$DISTRO_FAMILY" = "netbsd" ]; then
+    # No /etc/profile.d or update-motd.d on NetBSD -- hook login rc files instead
+    $SUDO cp "$SCRIPT_DIR/motd/motd-netbsd.sh" /etc/homelab-motd.sh
+    $SUDO chmod 644 /etc/homelab-motd.sh
+
+    HOOK='[ -f /etc/homelab-motd.sh ] && . /etc/homelab-motd.sh'
+
+    # sh/bash login shells
+    if ! grep -qF 'homelab-motd.sh' /etc/profile 2>/dev/null; then
+      printf '\n# homelab-bootstrap MOTD\n%s\n' "$HOOK" | $SUDO tee -a /etc/profile > /dev/null
+      ok "Hooked -> /etc/profile"
+    fi
+    # zsh login shells (pkgsrc zsh reads /usr/pkg/etc/zprofile)
+    if ! grep -qF 'homelab-motd.sh' /usr/pkg/etc/zprofile 2>/dev/null; then
+      $SUDO mkdir -p /usr/pkg/etc
+      printf '\n# homelab-bootstrap MOTD\n%s\n' "$HOOK" | $SUDO tee -a /usr/pkg/etc/zprofile > /dev/null
+      ok "Hooked -> /usr/pkg/etc/zprofile"
+    fi
+
+    # sshd prints /etc/motd directly (PrintMotd), independent of shell profiles
+    [ -f /etc/motd ] && $SUDO cp /dev/null /etc/motd
+    warn "Base /etc/motd truncated to avoid double-printing"
+
+    ok "MOTD installed -> /etc/homelab-motd.sh"
+    warn "csh/tcsh login shells will NOT source it (POSIX sh / bash / zsh only)"
   fi
 }
 
@@ -311,6 +363,22 @@ install_payrespects() {
     return
   fi
 
+  if [ "$DISTRO_FAMILY" = "netbsd" ]; then
+    info "Installing pay-respects on NetBSD..."
+    # No pkgsrc package and no prebuilt NetBSD binary upstream -- cargo only.
+    if ! command -v cargo &>/dev/null; then
+      info "No rust toolchain -- installing rust from pkgsrc (this is a big build/download)..."
+      pkg_install rust
+    fi
+    if command -v cargo &>/dev/null; then
+      if _cargo_payrespects; then ok "pay-respects installed via cargo"; return; fi
+      warn "cargo install failed."
+    fi
+    warn "No pay-respects package for NetBSD and no working rust toolchain."
+    warn "Install rust then re-run:  pkgin install rust && ./install.sh --pay-respects"
+    return
+  fi
+
   info "Installing pay-respects..."
 
   # 1) distro package (Fedora COPR / future apt) -- quiet miss, keep going
@@ -391,6 +459,30 @@ install_ssh() {
     return
   fi
 
+  if [ "$DISTRO_FAMILY" = "netbsd" ]; then
+    # Base sshd_config ships WITHOUT an Include directive, same as FreeBSD.
+    # sshd/rc.d are managed via /etc/rc.d, not systemd/SMF.
+    $SUDO mkdir -p "$SSHD_D"
+    if ! grep -q '^Include[[:space:]]*/etc/ssh/sshd_config.d/' /etc/ssh/sshd_config; then
+      backup="/etc/ssh/sshd_config.bak.$(date +%Y%m%d%H%M%S)"
+      $SUDO cp /etc/ssh/sshd_config "$backup"
+      warn "Backed up sshd_config -> $backup"
+      tmp=$(mktemp)
+      printf 'Include /etc/ssh/sshd_config.d/*.conf\n\n' | cat - /etc/ssh/sshd_config > "$tmp"
+      $SUDO cp "$tmp" /etc/ssh/sshd_config
+      $SUDO chmod 644 /etc/ssh/sshd_config
+      rm -f "$tmp"
+      warn "Prepended Include directive to /etc/ssh/sshd_config"
+    fi
+    $SUDO cp "$SCRIPT_DIR/ssh/sshd_hardening.conf" "$SSHD_D/99-hardening.conf"
+    $SUDO chmod 600 "$SSHD_D/99-hardening.conf"
+    ok "Deployed -> $SSHD_D/99-hardening.conf"
+    $SUDO /usr/sbin/sshd -t && $SUDO /etc/rc.d/sshd restart \
+      && ok "sshd hardened and restarted" \
+      || die "sshd config validation failed! Fix before restarting."
+    return
+  fi
+
   if [ -d "$SSHD_D" ]; then
     sudo cp "$SCRIPT_DIR/ssh/sshd_hardening.conf" "$SSHD_D/99-hardening.conf"
     sudo chmod 600 "$SSHD_D/99-hardening.conf"
@@ -442,6 +534,21 @@ install_sudo() {
     fi
     warn "Solaris has no 'wheel' group by default -- create it and add users manually"
     $SUDO visudo -cf "$TARGET" \
+      && ok "sudoers drop-in deployed: $TARGET" \
+      || die "sudoers syntax error! Check $TARGET"
+    return
+  fi
+
+  if [ "$DISTRO_FAMILY" = "netbsd" ]; then
+    # sudo is a pkgsrc package; config lives under the pkgsrc prefix (/usr/pkg),
+    # not /etc -- and pkgsrc's sudoers already ships with an includedir wired
+    # in, unlike FreeBSD/Solaris, so there's nothing to check/warn about there.
+    command -v sudo &>/dev/null || pkg_install sudo
+    TARGET="/usr/pkg/etc/sudoers.d/10-wheel-hardening"
+    $SUDO mkdir -p /usr/pkg/etc/sudoers.d
+    $SUDO cp "$SCRIPT_DIR/sudo/10-wheel-hardening" "$TARGET"
+    $SUDO chmod 440 "$TARGET"
+    $SUDO /usr/pkg/sbin/visudo -cf "$TARGET" \
       && ok "sudoers drop-in deployed: $TARGET" \
       || die "sudoers syntax error! Check $TARGET"
     return
