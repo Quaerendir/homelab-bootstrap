@@ -67,16 +67,20 @@ qt_os_icon() {
 }
 
 prompt_qt_top() {
+  # NOTE: call the qt_* segment functions directly (not via $(...)) --
+  # command substitution forks a subshell in zsh, so a QT_CURRENT_BG
+  # write inside one would never be visible to the next segment call.
   QT_CURRENT_BG='NONE'
-  local out=''
-  out+="%{%F{$QT_OS_BG}%}\u256d\u2500\ue0b2%{%f%}"
-  out+="$(qt_segment "$QT_OS_BG" "$QT_OS_FG" " $(qt_os_icon) ")"
-  out+="$(qt_segment "$QT_USER_BG" "$QT_USER_FG" " %n ")"
-  out+="$(qt_segment "$QT_PATH_BG" "$QT_PATH_FG" " $(qt_path) ")"
-  out+="$(qt_end)"
-  out+="$(qt_git)"
-  out+="$(qt_right_overlay)"
-  print -n "$out"
+  print -n "%{%F{$QT_OS_BG}%}\u256d\u2500\ue0b2%{%f%}"
+  qt_segment "$QT_OS_BG" "$QT_OS_FG" " $(qt_os_icon) "
+  qt_segment "$QT_USER_BG" "$QT_USER_FG" " %n "
+  qt_segment "$QT_PATH_BG" "$QT_PATH_FG" " $(qt_path) "
+  if git rev-parse --is-inside-work-tree &>/dev/null; then
+    qt_git
+  else
+    qt_end
+  fi
+  qt_right_overlay
 }
 
 qt_path() {
