@@ -11,6 +11,10 @@ export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:/usr/local/sbin:$PATH"
 
 # --- Oh My Zsh ---
 export ZSH="$HOME/.oh-my-zsh"
+
+# zsh2000 theme calls `rvm-prompt` unconditionally unless disabled (RVM not installed here)
+export ZSH_2000_DISABLE_RVM=true
+
 ZSH_THEME="robbyrussell"
 
 plugins=(
