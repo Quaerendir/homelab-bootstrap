@@ -7,6 +7,7 @@
 _theme_zshrc="${ZDOTDIR:-$HOME}/.zshrc"
 
 _theme_curated=(
+  quickterm
   xiong-chiamiov-plus
   robbyrussell
   agnoster
