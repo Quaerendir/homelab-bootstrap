@@ -69,3 +69,6 @@ alias df='df -h'
 alias free='free -h'
 alias ports='ss -tulnp'
 alias myip='curl -s ifconfig.me && echo'
+
+# Interactive theme switcher (fzf) -- `theme` / `theme list` / `theme <name>`
+source "$HOME/scripts/zsh-theme-switcher.zsh"

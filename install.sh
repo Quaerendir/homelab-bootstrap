@@ -300,6 +300,10 @@ install_zsh() {
   cp "$SCRIPT_DIR/zsh/zshrc" "$USER_HOME/.zshrc"
   ok ".zshrc deployed"
 
+  mkdir -p "$USER_HOME/scripts"
+  cp "$SCRIPT_DIR/zsh/zsh-theme-switcher.zsh" "$USER_HOME/scripts/zsh-theme-switcher.zsh"
+  ok "zsh theme switcher deployed"
+
   ZSH_PATH=$(which zsh)
   if [ "$SHELL" != "$ZSH_PATH" ]; then
     if [ "$DISTRO_FAMILY" = "solaris" ]; then
