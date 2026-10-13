@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### Added
+- `--zsh`: installs `fzf` (the `theme` switcher needs it; on RHEL-family via EPEL,
+  best-effort elsewhere). `.zshrc` template now sources an optional `~/.zshrc.local`
+  for host-specific aliases/settings that survive reruns.
 - **NetBSD 10.1 support** across all modules:
   - Package manager: pkgsrc via `pkgin` detected via `uname -s = NetBSD`
     (`PKG="pkgin"`); bootstraps `pkgin` itself via `pkg_add` + `PKG_PATH` against
@@ -65,6 +68,9 @@
     installed locale does.
 
 ### Fixed
+- `--pay-respects`: prebuilt-binary fallback failed with "tar: not a tar archive" on
+  stock Rocky/RHEL 8 -- the upstream tarball is `.tar.zst` and GNU tar 1.30 needs the
+  `zstd` binary, which the minimal image lacks. `zstd` is now installed first.
 - NetBSD `--motd`: `vmstat -s | awk '/pages free/{print $1}'` matched *two*
   lines ("pages free" and the later "pages freed by daemon" -- "free" is a
   substring of "freed") and returned both numbers, breaking the `$(( ))`

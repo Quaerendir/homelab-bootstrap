@@ -76,3 +76,6 @@ alias myip='curl -s ifconfig.me && echo'
 
 # Interactive theme switcher (fzf) -- `theme` / `theme list` / `theme <name>`
 source "$HOME/scripts/zsh-theme-switcher.zsh"
+
+# Host-local overrides (aliases, history size, ...) -- survives `install.sh --zsh` reruns
+[[ -f "$HOME/.zshrc.local" ]] && source "$HOME/.zshrc.local"

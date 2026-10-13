@@ -271,6 +271,14 @@ install_zsh() {
   info "Installing zsh + Oh My Zsh..."
   pkg_install zsh git curl
 
+  # fzf powers the `theme` switcher. Best-effort: on RHEL-family it lives in EPEL,
+  # and not every platform packages it -- a missing fzf only disables `theme`.
+  if [ "$DISTRO_FAMILY" = "rhel" ] && ! grep -qi '^ID=fedora' /etc/os-release 2>/dev/null \
+     && ! rpm -q epel-release &>/dev/null; then
+    pkg_install epel-release || warn "epel-release not installed -- fzf may be unavailable"
+  fi
+  pkg_install fzf || warn "fzf not installed -- the 'theme' switcher will not work"
+
   if [ ! -d "$USER_HOME/.oh-my-zsh" ]; then
     RUNZSH=no CHSH=no sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
   else
@@ -399,6 +407,9 @@ install_payrespects() {
   fi
 
   # 3) upstream prebuilt-binary installer (x86_64 / aarch64 Linux)
+  # The upstream tarball is .tar.zst and GNU tar shells out to zstd to unpack it --
+  # stock Rocky/RHEL 8 images ship without the binary ("not a tar archive").
+  command -v zstd &>/dev/null || pkg_install zstd || warn "zstd not installed -- prebuilt install may fail"
   info "Installing prebuilt binary via upstream install script..."
   curl -fsSL https://raw.githubusercontent.com/iffse/pay-respects/main/install.sh | sh \
     && ok "pay-respects installed (prebuilt binary)" \
